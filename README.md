@@ -163,8 +163,11 @@ print(f"Embedding shape: {embeddings.shape}")
 1. **Batch Size**: Adjust embedding batch size based on available RAM
 2. **Image Quality**: Balance OCR accuracy vs processing speed
 3. **Chunk Overlap**: Increase overlap for better context continuity
-4. **Search Results**: Tune number of retrieved chunks based on document complexity# ================== PROJECT STRUCTURE ==================
-"""
+4. **Search Results**: Tune number of retrieved chunks based on document complexity
+
+# ================== PROJECT STRUCTURE ==================
+
+```
 financial_agent/
 ├── .env                     # Environment variables
 ├── .gitignore              # Git ignore file
@@ -177,4 +180,4 @@ financial_agent/
 ├── agent.py               # LangGraph agent
 ├── backend.py             # FastAPI server
 └── frontend.py            # Streamlit app
-"""
+```

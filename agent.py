@@ -1,11 +1,9 @@
+import asyncio
+import re
 from enum import Enum
-from typing import Dict
-from langgraph.graph import StateGraph, END
-import google.generativeai as genai
 from tools import RAGTool, StockTool
-from config import GEMINI_API_KEY, logger
-
-genai.configure(api_key=GEMINI_API_KEY)
+from config import logger
+import time
 
 
 class DataSource(Enum):
@@ -15,184 +13,263 @@ class DataSource(Enum):
     BOTH = "both"
 
 
-class AgentState(Dict):
-    query: str
-    data_source: DataSource
-    rag_result: Dict
-    api_result: Dict
-    final_answer: str
-    requires_rag: bool
-    requires_api: bool
-    error: str
-
-
 class FinancialAgent:
     def __init__(self):
-        self.rag_tool = RAGTool()
-        self.stock_tool = StockTool()
-        self.model = genai.GenerativeModel("gemini-1.5-pro")
-        self.workflow = self._build_workflow()
-        self.app = self.workflow.compile()
+        logger.info("🤖 Initializing Financial Agent...")
+        start_time = time.time()
 
-    def _build_workflow(self):
-        """Build LangGraph workflow"""
-        workflow = StateGraph(AgentState)
-
-        workflow.add_node("analyze", self._analyze_query)
-        workflow.add_node("fetch_rag", self._fetch_rag)
-        workflow.add_node("fetch_api", self._fetch_api)
-        workflow.add_node("synthesize", self._synthesize)
-
-        workflow.set_entry_point("analyze")
-
-        workflow.add_conditional_edges(
-            "analyze",
-            self._route_query,
-            {
-                "rag_only": "fetch_rag",
-                "api_only": "fetch_api",
-                "both": "fetch_rag"
-            }
-        )
-
-        workflow.add_conditional_edges(
-            "fetch_rag",
-            lambda state: "fetch_api" if state.get("requires_api") else "synthesize"
-        )
-
-        workflow.add_edge("fetch_api", "synthesize")
-        workflow.add_edge("synthesize", END)
-
-        return workflow
-
-    async def _analyze_query(self, state):
-        """Analyze query requirements"""
-        query = state["query"].lower()
-        data_source = state["data_source"]
-
-        if data_source == DataSource.PDF_ONLY:
-            state["requires_rag"] = True
-            state["requires_api"] = False
-        elif data_source == DataSource.API_ONLY:
-            state["requires_rag"] = False
-            state["requires_api"] = True
-        elif data_source == DataSource.BOTH:
-            state["requires_rag"] = True
-            state["requires_api"] = True
-        else:  # AUTO
-            # Simple detection logic
-            api_keywords = ["price", "stock", "current", "today", "market"]
-            rag_keywords = ["report", "annual", "risk", "strategy", "business"]
-
-            has_api = any(keyword in query for keyword in api_keywords)
-            has_rag = any(keyword in query for keyword in rag_keywords)
-
-            if has_api and has_rag:
-                state["requires_rag"] = True
-                state["requires_api"] = True
-            elif has_api:
-                state["requires_rag"] = False
-                state["requires_api"] = True
-            else:
-                state["requires_rag"] = True
-                state["requires_api"] = False
-
-        return state
-
-    def _route_query(self, state):
-        """Route based on requirements"""
-        if state["requires_rag"] and state["requires_api"]:
-            return "both"
-        elif state["requires_rag"]:
-            return "rag_only"
-        else:
-            return "api_only"
-
-    async def _fetch_rag(self, state):
-        """Fetch RAG data"""
-        result = await self.rag_tool.query(state["query"])
-        state["rag_result"] = result
-        return state
-
-    async def _fetch_api(self, state):
-        """Fetch stock data"""
-        # Extract symbol (simple logic)
-        query = state["query"].upper()
-        symbol = "NVDA" if "NVDA" in query or "NVIDIA" in query else "NVDA"
-
-        result = await self.stock_tool.get_price(symbol)
-        state["api_result"] = result
-        return state
-
-    async def _synthesize(self, state):
-        """Synthesize final response"""
-        parts = []
-
-        # Add RAG results
-        if state.get("rag_result") and state["rag_result"]["status"] == "success":
-            parts.append(f"Document Analysis:\n{state['rag_result']['answer']}")
-
-        # Add API results
-        if state.get("api_result") and state["api_result"]["status"] == "success":
-            api_data = state["api_result"]
-            parts.append(f"Current Stock Data:\n"
-                         f"Symbol: {api_data['symbol']}\n"
-                         f"Price: ${api_data['price']}\n"
-                         f"Change: {api_data['change']}")
-
-        if not parts:
-            state["final_answer"] = "I couldn't gather the necessary information to answer your question."
-        elif len(parts) == 1:
-            state["final_answer"] = parts[0]
-        else:
-            # Synthesize both sources
-            context = "\n\n".join(parts)
-            prompt = f"""Combine the following information to provide a comprehensive answer to: {state['query']}
-
-{context}
-
-Provide a clear, integrated response that combines insights from both sources."""
-
-            response = await self.model.generate_content_async(prompt)
-            state["final_answer"] = response.text
-
-        return state
-
-    async def load_document(self, pdf_path):
-        """Load document"""
-        return await self.rag_tool.load_document(pdf_path)
-
-    async def query(self, query, data_source=DataSource.AUTO):
-        """Main query method"""
         try:
-            initial_state = {
-                "query": query,
-                "data_source": data_source,
-                "rag_result": {},
-                "api_result": {},
-                "final_answer": "",
-                "requires_rag": False,
-                "requires_api": False,
-                "error": ""
-            }
+            # Initialize tools
+            logger.info("📚 Initializing RAG Tool...")
+            rag_start = time.time()
+            self.rag_tool = RAGTool()
+            rag_time = time.time() - rag_start
+            logger.info(f"✅ RAG Tool initialized in {rag_time:.2f}s")
 
-            final_state = await self.app.ainvoke(initial_state)
+            logger.info("📈 Initializing Stock Tool...")
+            stock_start = time.time()
+            self.stock_tool = StockTool()
+            stock_time = time.time() - stock_start
+            logger.info(f"✅ Stock Tool initialized in {stock_time:.2f}s")
 
-            return {
-                "status": "success",
-                "answer": final_state["final_answer"],
-                "sources": self._get_sources(final_state)
-            }
+            # Agent state
+            self.document_loaded = False
+
+            total_time = time.time() - start_time
+            logger.info(f"🎯 Financial Agent initialization completed:")
+            logger.info(f"  - RAG Tool: {rag_time:.2f}s")
+            logger.info(f"  - Stock Tool: {stock_time:.2f}s")
+            logger.info(f"  - Total time: {total_time:.2f}s")
+            logger.info(f"  - Status: Ready for operations")
 
         except Exception as e:
-            logger.error(f"Agent query failed: {e}")
-            return {"status": "error", "message": str(e)}
+            init_time = time.time() - start_time
+            logger.error(f"❌ Financial Agent initialization failed after {init_time:.2f}s: {e}", exc_info=True)
+            raise
 
-    def _get_sources(self, state):
-        """Get sources used"""
+    async def load_document(self, pdf_path):
+        """Load a PDF document for RAG queries"""
+        logger.info(f"📄 Agent loading document: {pdf_path}")
+        start_time = time.time()
+
+        try:
+            result = await self.rag_tool.load_document(pdf_path)
+
+            if result.get("status") == "success":
+                self.document_loaded = True
+                load_time = time.time() - start_time
+                logger.info(f"✅ Document loaded successfully by agent in {load_time:.2f}s")
+                logger.info(f"  - Document status: Ready for queries")
+                logger.info(f"  - Chunks processed: {result.get('chunks', 'unknown')}")
+            else:
+                load_time = time.time() - start_time
+                logger.error(f"❌ Document loading failed after {load_time:.2f}s")
+                logger.error(f"  - Error: {result.get('message', 'Unknown error')}")
+                self.document_loaded = False
+
+            return result
+
+        except Exception as e:
+            load_time = time.time() - start_time
+            logger.error(f"❌ Agent document loading failed after {load_time:.2f}s: {e}", exc_info=True)
+            self.document_loaded = False
+            return {
+                "status": "error",
+                "message": f"Agent document loading failed: {str(e)}",
+                "load_time": load_time
+            }
+
+    def _extract_stock_symbols(self, query):
+        """Extract stock symbols from query"""
+        # Common patterns for stock symbols
+        patterns = [
+            r'\b([A-Z]{1,5})\b(?:\s+stock|\s+price|\s+share)',  # Symbol followed by stock/price/share
+            r'\$([A-Z]{1,5})\b',  # $SYMBOL format
+            r'\b(NVDA|NVIDIA)\b',  # Specific common symbols
+            r'\b([A-Z]{2,5})\s+current\s+price',  # Symbol current price
+        ]
+
+        symbols = set()
+        query_upper = query.upper()
+
+        for pattern in patterns:
+            matches = re.findall(pattern, query_upper)
+            for match in matches:
+                if isinstance(match, tuple):
+                    symbols.update(match)
+                else:
+                    symbols.add(match)
+
+        # Clean up symbols
+        cleaned_symbols = set()
+        for symbol in symbols:
+            if symbol and len(symbol) >= 2 and symbol.isalpha():
+                cleaned_symbols.add(symbol)
+
+        logger.debug(f"Extracted stock symbols from query: {list(cleaned_symbols)}")
+        return list(cleaned_symbols)
+
+    def _determine_data_sources(self, query, data_source):
+        """Determine which data sources to use based on query and settings"""
+        logger.debug(f"Determining data sources for query: '{query[:50]}...'")
+        logger.debug(f"Data source setting: {data_source}")
+
+        # Extract stock symbols from query
+        stock_symbols = self._extract_stock_symbols(query)
+        has_stock_query = bool(stock_symbols) or any(
+            keyword in query.lower()
+            for keyword in ['stock price', 'current price', 'share price', 'market cap', 'trading']
+        )
+
+        # Determine if document query
+        has_doc_query = any(
+            keyword in query.lower()
+            for keyword in ['risk', 'revenue', 'business', 'financial', 'earnings', 'segment', 'summarize']
+        )
+
+        use_rag = False
+        use_stock = False
+
+        if data_source == DataSource.AUTO:
+            use_rag = has_doc_query and self.document_loaded
+            use_stock = has_stock_query
+        elif data_source == DataSource.PDF_ONLY:
+            use_rag = self.document_loaded
+            use_stock = False
+        elif data_source == DataSource.API_ONLY:
+            use_rag = False
+            use_stock = True
+        elif data_source == DataSource.BOTH:
+            use_rag = self.document_loaded
+            use_stock = True
+
+        logger.info(f"Data source decision:")
+        logger.info(f"  - Use RAG: {use_rag} (doc_loaded: {self.document_loaded}, has_doc_query: {has_doc_query})")
+        logger.info(f"  - Use Stock API: {use_stock} (has_stock_query: {has_stock_query})")
+        logger.info(f"  - Stock symbols found: {stock_symbols}")
+
+        return use_rag, use_stock, stock_symbols
+
+    async def query_with_streaming(self, query, data_source):
+        """Process query with streaming LLM response"""
+        logger.info(f"🔍 Agent processing streaming query: '{query[:100]}...'")
+        start_time = time.time()
+
+        try:
+            # Convert string to enum if needed
+            if isinstance(data_source, str):
+                data_source = DataSource(data_source)
+
+            # Determine what data sources to use
+            use_rag, use_stock, stock_symbols = self._determine_data_sources(query, data_source)
+
+            if not use_rag and not use_stock:
+                logger.warning("⚠️ No data sources available for query")
+                yield {"type": "error",
+                       "message": "No data sources available. Please load a document or enable stock API."}
+                return
+
+            # Collect data from sources
+            rag_data = None
+            stock_data = {}
+
+            # Get stock data if needed (this is fast, so we do it first)
+            if use_stock and stock_symbols:
+                logger.info(f"📈 Fetching stock data for symbols: {stock_symbols}")
+                for symbol in stock_symbols:
+                    try:
+                        result = await self.stock_tool.get_price(symbol)
+                        if result.get("status") == "success":
+                            stock_data[symbol] = result
+                            logger.info(f"✅ Got stock data for {symbol}: ${result.get('price', 'N/A')}")
+                        else:
+                            logger.warning(
+                                f"⚠️ Failed to get stock data for {symbol}: {result.get('message', 'Unknown error')}")
+                    except Exception as e:
+                        logger.error(f"❌ Stock API error for {symbol}: {e}")
+
+            # Process with RAG if needed (this includes streaming)
+            if use_rag:
+                logger.info("📚 Processing with RAG (streaming)...")
+
+                # If we have stock data, enhance the query
+                enhanced_query = query
+                if stock_data:
+                    stock_info = []
+                    for symbol, data in stock_data.items():
+                        price = data.get('price', 'N/A')
+                        change = data.get('change', 'N/A')
+                        stock_info.append(f"{symbol}: ${price} ({change})")
+
+                    stock_context = "Current stock prices: " + ", ".join(stock_info)
+                    enhanced_query = f"{query}\n\nCurrent market data: {stock_context}"
+                    logger.debug(f"Enhanced query with stock data: {len(enhanced_query)} characters")
+
+                # Stream the RAG response
+                async for chunk in self.rag_tool.query_with_streaming(enhanced_query):
+                    yield chunk
+
+            elif use_stock:
+                # Only stock data, create a simple response
+                logger.info("📈 Creating stock-only response...")
+                yield {"type": "llm_start"}
+
+                if stock_data:
+                    response_parts = []
+                    for symbol, data in stock_data.items():
+                        price = data.get('price', 'N/A')
+                        change = data.get('change', 'N/A')
+                        volume = data.get('volume', 'N/A')
+                        response_parts.append(
+                            f"{symbol} is currently trading at ${price} with a change of {change}. Volume: {volume:,} shares.")
+
+                    full_response = "Here's the current stock information:\n\n" + "\n".join(response_parts)
+
+                    # Stream word by word for consistency
+                    words = full_response.split()
+                    for word in words:
+                        yield {"type": "llm_chunk", "text": word + " "}
+                        await asyncio.sleep(0.05)  # Slightly slower for readability
+                else:
+                    error_response = "I couldn't retrieve stock data for the requested symbols. Please check the symbol and try again."
+                    words = error_response.split()
+                    for word in words:
+                        yield {"type": "llm_chunk", "text": word + " "}
+                        await asyncio.sleep(0.05)
+
+            total_time = time.time() - start_time
+            logger.info(f"✅ Agent streaming query completed in {total_time:.2f}s")
+
+        except Exception as e:
+            query_time = time.time() - start_time
+            logger.error(f"❌ Agent streaming query failed after {query_time:.2f}s: {e}", exc_info=True)
+            yield {"type": "error", "message": f"Agent query failed: {str(e)}"}
+
+    async def query(self, query, data_source):
+        """Non-streaming version for backward compatibility"""
+        logger.info(f"🔍 Agent processing non-streaming query: '{query[:100]}...'")
+
+        full_answer = ""
         sources = []
-        if state.get("rag_result") and state["rag_result"].get("status") == "success":
-            sources.append("Annual Report")
-        if state.get("api_result") and state["api_result"].get("status") == "success":
-            sources.append("Stock API")
-        return sources
+
+        async for chunk in self.query_with_streaming(query, data_source):
+            if chunk.get("type") == "llm_chunk":
+                full_answer += chunk.get("text", "")
+            elif chunk.get("type") == "sources":
+                sources = chunk.get("sources", [])
+            elif chunk.get("type") == "error":
+                return {"status": "error", "message": chunk.get("message", "Unknown error")}
+
+        return {
+            "status": "success",
+            "answer": full_answer.strip(),
+            "sources": sources
+        }
+
+    def get_status(self):
+        """Get agent status"""
+        return {
+            "document_loaded": self.document_loaded,
+            "rag_ready": self.rag_tool.is_ready if hasattr(self.rag_tool, 'is_ready') else False,
+            "stock_api_ready": True  # Stock API is always ready if initialized
+        }
