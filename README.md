@@ -165,7 +165,7 @@ print(f"Embedding shape: {embeddings.shape}")
 3. **Chunk Overlap**: Increase overlap for better context continuity
 4. **Search Results**: Tune number of retrieved chunks based on document complexity
 
-# ================== PROJECT STRUCTURE ==================
+# ==== PROJECT STRUCTURE ====
 
 ```
 financial_agent/
